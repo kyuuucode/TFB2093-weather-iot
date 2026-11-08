@@ -33,7 +33,8 @@ TIMEZONE = "Asia/Kuala_Lumpur"
 PAST_DAYS = 3          # Milestone 2: pull historical data immediately
 FORECAST_DAYS = 3
 RUN_EVERY_MINUTES = 60  # hourly is enough; Open-Meteo data is hourly
-DATA_DIR = "data"
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+DATA_DIR = os.path.join(BASE_DIR, "data")
 
 HOURLY_VARS = [
     "temperature_2m",
@@ -55,7 +56,7 @@ FIELDS = ["time", "temperature_c", "humidity_pct", "rainfall_mm",
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
-    handlers=[logging.FileHandler("ingest.log"), logging.StreamHandler()],
+    handlers=[logging.FileHandler(os.path.join(BASE_DIR, "ingest.log")), logging.StreamHandler()],
 )
 log = logging.getLogger("ingest")
 
