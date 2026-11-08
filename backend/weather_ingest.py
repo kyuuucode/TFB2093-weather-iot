@@ -34,7 +34,7 @@ PAST_DAYS = 3          # Milestone 2: pull historical data immediately
 FORECAST_DAYS = 3
 RUN_EVERY_MINUTES = 60  # hourly is enough; Open-Meteo data is hourly
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-DATA_DIR = os.path.join(BASE_DIR, "data")
+DATA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "data")
 
 HOURLY_VARS = [
     "temperature_2m",
