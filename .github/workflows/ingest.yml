@@ -30,7 +30,6 @@ jobs:
       - run: python backend/weather_ingest.py --once
 
       - name: Rebuild SQLite from CSV
-        if: ${{ hashFiles('database/load_csv_to_db.py') != '' }}
         run: |
           rm -f database/weather.db
           python database/load_csv_to_db.py data
@@ -40,7 +39,7 @@ jobs:
           git config user.name "github-actions"
           git config user.email "actions@github.com"
           git add data
-          if [ -f database/weather.db ]; then git add -f database/weather.db; fi
+          git add -f database/weather.db
           git diff --cached --quiet || git commit -m "Hourly update $(date +%FT%T)"
           git pull --rebase
           git push
