@@ -7,11 +7,18 @@ Zero-cost: uses only Python stdlib sqlite3 + pandas/numpy.
 Run:  python weather_db.py --demo     (builds demo_weather.db with synthetic data and prints metrics)
       python weather_db.py            (evaluates the real weather.db)
 
+Field names follow Owner B's (Icha's) ingestion script:
+  FIELDS = ["time", "temperature_c", "humidity_pct", "rainfall_mm",
+            "wind_speed_kmh", "rain_probability_pct"]
+  "time" is stored as obs_time (observations) or target_time (forecast_snapshots).
+
 Timestamp convention (important for the whole team):
   All times are stored as ISO-8601 hourly strings, e.g. '2026-11-08T14:00'.
-  Owner B must request Open-Meteo with a FIXED timezone (e.g. timezone=Asia/Kuala_Lumpur)
+  Open-Meteo must be requested with a FIXED timezone (timezone=Asia/Kuala_Lumpur)
   for both observations and forecasts so that target_time matches obs_time exactly.
 """
+
+from __future__ import annotations
 
 import argparse
 import os
@@ -26,6 +33,10 @@ import pandas as pd
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DB_PATH = os.path.join(BASE_DIR, "weather.db")
 DEMO_DB_PATH = os.path.join(BASE_DIR, "demo_weather.db")
+
+# Same field names as Icha's ingestion script
+FIELDS = ["time", "temperature_c", "humidity_pct", "rainfall_mm",
+          "wind_speed_kmh", "rain_probability_pct"]
 
 RAIN_THRESHOLD_MM = 0.1      # >= this amount counts as "rain" (observed AND forecast)
 HEADLINE_LEAD_H = 24         # headline lead time used for the report
@@ -44,25 +55,25 @@ CREATE TABLE IF NOT EXISTS observations (
     obs_time        TEXT    NOT NULL,              -- when the weather actually happened
     temperature_c   REAL,
     humidity_pct    REAL,
+    rainfall_mm     REAL,
     wind_speed_kmh  REAL,
-    precipitation_mm REAL,
-    rain_observed   INTEGER GENERATED ALWAYS AS (precipitation_mm >= 0.1) VIRTUAL,
+    rain_observed   INTEGER GENERATED ALWAYS AS (rainfall_mm >= 0.1) VIRTUAL,
     ingested_at     TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M','now')),
     UNIQUE (location, obs_time)
 );
 
 -- Forecast snapshots: every fetch is stored as new rows (append-only, never overwritten)
 CREATE TABLE IF NOT EXISTS forecast_snapshots (
-    forecast_id      INTEGER PRIMARY KEY AUTOINCREMENT,
-    location         TEXT    NOT NULL,
-    issued_at        TEXT    NOT NULL,             -- when the forecast was fetched
-    target_time      TEXT    NOT NULL,             -- the hour being predicted
-    lead_time_hours  INTEGER NOT NULL,             -- target_time - issued_at (e.g. 24)
-    temperature_c    REAL,
-    humidity_pct     REAL,
-    wind_speed_kmh   REAL,
-    precipitation_mm REAL,
-    precip_prob_pct  REAL,
+    forecast_id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    location             TEXT    NOT NULL,
+    issued_at            TEXT    NOT NULL,         -- when the forecast was fetched
+    target_time          TEXT    NOT NULL,         -- the hour being predicted
+    lead_time_hours      INTEGER NOT NULL,         -- target_time - issued_at (e.g. 24)
+    temperature_c        REAL,
+    humidity_pct         REAL,
+    rainfall_mm          REAL,
+    wind_speed_kmh       REAL,
+    rain_probability_pct REAL,
     UNIQUE (location, issued_at, target_time)
 );
 
@@ -85,11 +96,11 @@ END;
 -- Convenience view: each forecast paired with what actually happened
 CREATE VIEW IF NOT EXISTS v_forecast_vs_actual AS
 SELECT  f.forecast_id, f.location, f.issued_at, f.target_time, f.lead_time_hours,
-        f.temperature_c    AS fc_temp,      o.temperature_c    AS obs_temp,
-        f.humidity_pct     AS fc_humidity,  o.humidity_pct     AS obs_humidity,
-        f.wind_speed_kmh   AS fc_wind,      o.wind_speed_kmh   AS obs_wind,
-        f.precipitation_mm AS fc_precip,    o.precipitation_mm AS obs_precip,
-        f.precip_prob_pct  AS fc_precip_prob
+        f.temperature_c        AS fc_temp,      o.temperature_c  AS obs_temp,
+        f.humidity_pct         AS fc_humidity,  o.humidity_pct   AS obs_humidity,
+        f.wind_speed_kmh       AS fc_wind,      o.wind_speed_kmh AS obs_wind,
+        f.rainfall_mm          AS fc_rain,      o.rainfall_mm    AS obs_rain,
+        f.rain_probability_pct AS fc_rain_prob
 FROM forecast_snapshots f
 JOIN observations o
   ON o.location = f.location AND o.obs_time = f.target_time;
@@ -103,38 +114,97 @@ def get_conn(db_path: str = DB_PATH) -> sqlite3.Connection:
 
 
 def init_db(db_path: str = DB_PATH) -> None:
+    """Create the tables if missing. Safe to call on every run."""
+    if sqlite3.sqlite_version_info < (3, 31, 0):
+        raise RuntimeError(
+            f"SQLite {sqlite3.sqlite_version} is too old: version 3.31 or newer is needed "
+            "(generated columns). Update Python.")
     with get_conn(db_path) as conn:
+        cols = [r[1] for r in conn.execute("PRAGMA table_info(observations)")]
+        if cols and "rainfall_mm" not in cols:
+            raise RuntimeError(
+                f"{db_path} was created with the OLD schema (before the field rename). "
+                "If it holds no real data, delete the file and run again.")
         conn.executescript(SCHEMA)
 
 
 # ----------------------------------------------------------------------------
 # INSERT HELPERS (hand these to Owner B)
 # ----------------------------------------------------------------------------
-def insert_observation(conn, location, obs_time, temperature_c, humidity_pct,
-                       wind_speed_kmh, precipitation_mm):
-    """Insert one observed hour. Re-running ingestion is safe (duplicates are ignored)."""
+def _norm_time(value, floor_hour: bool = False) -> str:
+    """Return 'YYYY-MM-DDTHH:MM'. Accepts '2026-11-08T14:00', '2026-11-08 14:00:00', datetime."""
+    dt = value if isinstance(value, datetime) else datetime.fromisoformat(str(value))
+    if floor_hour:
+        dt = dt.replace(minute=0, second=0, microsecond=0)
+    return dt.strftime(TIME_FMT)
+
+
+def insert_observation(conn, location, time, temperature_c, humidity_pct,
+                       rainfall_mm, wind_speed_kmh):
+    """
+    Insert one observed hour. Open-Meteo can revise past observations, so re-running
+    ingestion UPDATES the row (latest value wins). A missing (None) new value never
+    erases a value that is already stored.
+    """
     conn.execute(
-        """INSERT OR IGNORE INTO observations
-           (location, obs_time, temperature_c, humidity_pct, wind_speed_kmh, precipitation_mm)
-           VALUES (?, ?, ?, ?, ?, ?)""",
-        (location, obs_time, temperature_c, humidity_pct, wind_speed_kmh, precipitation_mm),
+        """INSERT INTO observations
+           (location, obs_time, temperature_c, humidity_pct, rainfall_mm, wind_speed_kmh)
+           VALUES (?, ?, ?, ?, ?, ?)
+           ON CONFLICT(location, obs_time) DO UPDATE SET
+             temperature_c  = COALESCE(excluded.temperature_c,  temperature_c),
+             humidity_pct   = COALESCE(excluded.humidity_pct,   humidity_pct),
+             rainfall_mm    = COALESCE(excluded.rainfall_mm,    rainfall_mm),
+             wind_speed_kmh = COALESCE(excluded.wind_speed_kmh, wind_speed_kmh),
+             ingested_at    = strftime('%Y-%m-%dT%H:%M','now')""",
+        (location, _norm_time(time), temperature_c, humidity_pct, rainfall_mm, wind_speed_kmh),
     )
 
 
-def insert_forecast_snapshot(conn, location, issued_at, target_time, temperature_c,
-                             humidity_pct, wind_speed_kmh, precipitation_mm,
-                             precip_prob_pct=None):
-    """Insert one predicted hour as a NEW row; lead time is computed automatically."""
-    lead = int(round((datetime.strptime(target_time, TIME_FMT)
-                      - datetime.strptime(issued_at, TIME_FMT)).total_seconds() / 3600))
+def insert_forecast_snapshot(conn, location, issued_at, time, temperature_c,
+                             humidity_pct, rainfall_mm, wind_speed_kmh,
+                             rain_probability_pct=None) -> bool:
+    """
+    Insert one predicted hour as a NEW row (append-only: never overwritten, protected by triggers).
+    `time` is the hour being predicted (stored as target_time).
+    issued_at (e.g. Icha's fetched_at '2026-11-09T09:00:05') is floored to the hour and
+    lead_time_hours is computed automatically.
+    A 'forecast' whose target hour is before issued_at is not a forecast and is skipped (returns False).
+    """
+    issued = _norm_time(issued_at, floor_hour=True)
+    target = _norm_time(time)
+    lead = int(round((datetime.strptime(target, TIME_FMT)
+                      - datetime.strptime(issued, TIME_FMT)).total_seconds() / 3600))
+    if lead < 0:
+        return False
     conn.execute(
         """INSERT OR IGNORE INTO forecast_snapshots
            (location, issued_at, target_time, lead_time_hours, temperature_c,
-            humidity_pct, wind_speed_kmh, precipitation_mm, precip_prob_pct)
+            humidity_pct, rainfall_mm, wind_speed_kmh, rain_probability_pct)
            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-        (location, issued_at, target_time, lead, temperature_c, humidity_pct,
-         wind_speed_kmh, precipitation_mm, precip_prob_pct),
+        (location, issued, target, lead, temperature_c, humidity_pct,
+         rainfall_mm, wind_speed_kmh, rain_probability_pct),
     )
+    return True
+
+
+def _as_record(record) -> dict:
+    """Accept a dict with FIELDS keys, or a row/list/tuple in FIELDS order."""
+    return record if isinstance(record, dict) else dict(zip(FIELDS, record))
+
+
+def insert_observation_record(conn, location, record):
+    """Insert one observation straight from Icha's record (dict or FIELDS-ordered row)."""
+    r = _as_record(record)
+    insert_observation(conn, location, r["time"], r["temperature_c"], r["humidity_pct"],
+                       r["rainfall_mm"], r["wind_speed_kmh"])
+
+
+def insert_forecast_record(conn, location, issued_at, record) -> bool:
+    """Insert one forecast hour straight from Icha's record (dict or FIELDS-ordered row)."""
+    r = _as_record(record)
+    return insert_forecast_snapshot(conn, location, issued_at, r["time"], r["temperature_c"],
+                                    r["humidity_pct"], r["rainfall_mm"], r["wind_speed_kmh"],
+                                    r.get("rain_probability_pct"))
 
 
 # ----------------------------------------------------------------------------
@@ -188,15 +258,15 @@ def rain_confusion_matrix(df: pd.DataFrame, threshold_mm: float = RAIN_THRESHOLD
                           prob_threshold: float | None = None) -> dict:
     """
     2x2 rain confusion matrix.
-      Observed rain  = obs_precip >= threshold_mm
-      Predicted rain = fc_precip  >= threshold_mm   (or fc_precip_prob >= prob_threshold if given)
+      Observed rain  = obs_rain >= threshold_mm
+      Predicted rain = fc_rain  >= threshold_mm   (or fc_rain_prob >= prob_threshold if given)
     """
-    d = df.dropna(subset=["fc_precip", "obs_precip"])
-    actual = d["obs_precip"] >= threshold_mm
+    d = df.dropna(subset=["fc_rain", "obs_rain"])
+    actual = d["obs_rain"] >= threshold_mm
     if prob_threshold is not None:
-        predicted = d["fc_precip_prob"] >= prob_threshold
+        predicted = d["fc_rain_prob"] >= prob_threshold
     else:
-        predicted = d["fc_precip"] >= threshold_mm
+        predicted = d["fc_rain"] >= threshold_mm
 
     tp = int((predicted & actual).sum())      # predicted rain, rain happened
     fp = int((predicted & ~actual).sum())     # False Alarm
@@ -274,7 +344,7 @@ def build_demo(db_path: str = DEMO_DB_PATH, location: str = "Seri Iskandar") -> 
             wind = max(0, 8 + rng.normal(0, 2))
             rain = float(rng.random() < 0.2) * rng.uniform(0.2, 4)
             truth[t] = (temp, hum, wind, rain)
-            insert_observation(conn, location, t.strftime(TIME_FMT), temp, hum, wind, rain)
+            insert_observation(conn, location, t.strftime(TIME_FMT), temp, hum, rain, wind)
         # forecasts issued at 24h, 12h and 6h before each target hour
         for t, (temp, hum, wind, rain) in truth.items():
             for lead in (24, 12, 6):
@@ -286,7 +356,7 @@ def build_demo(db_path: str = DEMO_DB_PATH, location: str = "Seri Iskandar") -> 
                 insert_forecast_snapshot(
                     conn, location, issued, t.strftime(TIME_FMT),
                     temp + rng.normal(0, 0.6 * s), hum + rng.normal(0, 3 * s),
-                    max(0, wind + rng.normal(0, 1.5 * s)), f_rain,
+                    f_rain, max(0, wind + rng.normal(0, 1.5 * s)),
                     min(100, 90 if f_rain > 0 else 10))
     print(f"Demo database built: {db_path}")
 

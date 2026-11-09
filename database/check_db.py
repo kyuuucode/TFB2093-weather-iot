@@ -16,7 +16,8 @@ if not os.path.exists(db):
 
 with sqlite3.connect(db) as conn:
     c = conn.cursor()
-    print(f"Database: {db}\n")
+    print(f"Database: {db}")
+    print(f"Python {sys.version.split()[0]} | SQLite {sqlite3.sqlite_version}\n")
     for table in ("observations", "forecast_snapshots"):
         n = c.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
         print(f"{table}: {n} rows")
