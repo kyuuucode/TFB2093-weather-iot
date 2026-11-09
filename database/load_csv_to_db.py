@@ -18,7 +18,7 @@ import sys
 import weather_db as w
 
 LOCATION = "Seri Iskandar"
-DEFAULT_DATA_DIR = os.path.join(w.BASE_DIR, "..", "backend", "data")
+DEFAULT_DATA_DIR = os.path.join(w.BASE_DIR, "..", "data")
 
 
 def num(x):
