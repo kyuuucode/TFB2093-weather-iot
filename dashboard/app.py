@@ -1,7 +1,4 @@
-"""Seri Iskandar Weather Monitor - Streamlit dashboard (TFB2093 IoT Project, Owner: Aufa).
-
-Reads Owner C's SQLite database (database/weather.db) and uses Owner C's evaluation
-engine (database/weather_db.py) for MAE, RMSE and the rain confusion matrix.
+"""Seri Iskandar Weather Monitor - Streamlit dashboard (Owner: Aufa).
 
 LIVE SYNC: the dashboard downloads the latest weather.db committed by the hourly
 cronjob from GitHub, so the deployed app always shows fresh data without waiting
@@ -20,10 +17,10 @@ import plotly.graph_objects as go
 import requests
 import streamlit as st
 
-# ---------- link to Owner C's module ----------
+# ---------- link ----------
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(HERE, "..", "database"))
-import weather_db as wdb  # noqa: E402  (Owner C: schema, load_pairs, error_metrics, rain_confusion_matrix)
+import weather_db as wdb  # noqa: E402  (schema, load_pairs, error_metrics, rain_confusion_matrix)
 
 DB_PATH = os.environ.get("WEATHER_DB", wdb.DB_PATH)
 
@@ -60,37 +57,10 @@ PARAMS = {
 }
 
 st.set_page_config(page_title="Seri Iskandar Weather", page_icon="🌦️", layout="wide")
-
-# CSS Baharu: Bento Grid & Glassmorphism (Sokong Light/Night Mode)
 st.markdown(
     """<style>
-    /* Styling untuk kad metrik */
-    div[data-testid="stMetric"] {
-        background-color: var(--secondary-background-color);
-        border: 1px solid rgba(150, 150, 150, 0.15);
-        border-radius: 20px;
-        padding: 20px;
-        box-shadow: 0 8px 16px rgba(0, 0, 0, 0.08);
-        transition: transform 0.2s ease-in-out, box-shadow 0.2s ease;
-    }
-    div[data-testid="stMetric"]:hover {
-        transform: translateY(-4px);
-        box-shadow: 0 12px 20px rgba(0, 0, 0, 0.12);
-    }
-    /* Membesarkan saiz nilai metrik utama (Suhu, dll) */
-    div[data-testid="stMetricValue"] {
-        font-size: 2.2rem !important;
-        font-weight: 700 !important;
-    }
-    /* Kotak Info (Next forecast) */
-    div.stAlert {
-        border-radius: 16px;
-        border: none;
-    }
-    .block-container {
-        padding-top: 2rem;
-        max-width: 1200px; /* Hadkan lebar supaya tak nampak kosong */
-    }
+    div[data-testid="stMetric"]{background:rgba(120,130,160,.12);border-radius:14px;padding:14px 18px}
+    .block-container{padding-top:1.5rem}
     </style>""", unsafe_allow_html=True)
 
 # ---------- data layer ----------
@@ -167,7 +137,7 @@ pairs_f = pairs[(pairs["target_time"].dt.date >= d0) & (pairs["target_time"].dt.
 pairs_hz = pairs_f[pairs_f["lead_time_hours"] == hz].sort_values("target_time") if hz is not None else pairs_f.iloc[0:0]
 
 # ---------- header ----------
-st.title("🌦️ Seri Iskandar Weather Monitor")
+st.title("🌦️ WEATHERLY - Seri Iskandar Weather Monitor")
 st.caption("Open-Meteo observations vs. forecasts · TFB2093 Internet-of-Things")
 if using_demo:
     st.warning("database/weather.db not found – showing **demo data** from Owner C's demo builder.")
@@ -178,79 +148,44 @@ t1, t2, t3, t4 = st.tabs(["📍 Current", "📈 Actual vs Forecast", "🎯 Accur
 with t1:
     last = obs.iloc[-1]
     prev = obs.iloc[-2] if len(obs) > 1 else last
-    st.subheader(f"📍 Latest reading · {last['obs_time']:%d %b %Y, %H:%M}")
-    
+    st.subheader(f"Latest reading · {last['obs_time']:%d %b %Y, %H:%M}")
+    c = st.columns(4)
+
     def delta(col, d=1):
         if pd.isna(last[col]) or pd.isna(prev[col]):
             return None
         return f"{last[col] - prev[col]:+.{d}f}"
 
-    # SUSUNAN BENTO GRID: Kiri (Besar), Kanan (Grid 2x2)
-    col_main, col_metrics = st.columns([1.2, 2], gap="large")
+    c[0].metric("🌡️ Temperature", f"{fmt(last.temperature_c, 1)} °C", delta("temperature_c"))
+    c[1].metric("💧 Humidity", f"{fmt(last.humidity_pct, 0)} %", delta("humidity_pct", 0))
+    c[2].metric("🌧️ Rainfall", f"{fmt(last.rainfall_mm, 1)} mm", delta("rainfall_mm"),
+                delta_color="inverse")
+    c[3].metric("💨 Wind speed", f"{fmt(last.wind_speed_kmh, 1)} km/h", delta("wind_speed_kmh"))
 
-    with col_main:
-        # Kad Utama: Suhu
-        st.metric("🌡️ Temperature", f"{fmt(last.temperature_c, 1)} °C", delta("temperature_c"))
-        
-        # Ramalan seterusnya diselitkan di bawah suhu (macam widget kiri dalam gambar)
-        nxt = (fc[fc["target_time"] > last["obs_time"]]
-               .sort_values(["target_time", "lead_time_hours"])
-               .drop_duplicates("target_time"))
-        if not nxt.empty:
-            n = nxt.iloc[0]
-            prob = f" ({n.rain_probability_pct:.0f}% rain)" if pd.notna(n.rain_probability_pct) else ""
-            st.info(f"**Forecast ({n['target_time']:%H:%M}):**\n\n"
-                    f"🌡️ {fmt(n.temperature_c, 1)}°C | 🌧️ {fmt(n.rainfall_mm, 1)}mm {prob}\n\n"
-                    f"💨 {fmt(n.wind_speed_kmh, 1)}km/h | 💧 {fmt(n.humidity_pct, 0)}%")
-            rain_soon = nxt.head(6)["rainfall_mm"].max()
-            if pd.notna(rain_soon) and rain_soon >= rain_thr:
-                st.warning("☔ Rain expected within the next 6 hours.")
+    # most recent forecast for each upcoming hour = smallest lead time
+    nxt = (fc[fc["target_time"] > last["obs_time"]]
+           .sort_values(["target_time", "lead_time_hours"])
+           .drop_duplicates("target_time"))
+    if not nxt.empty:
+        n = nxt.iloc[0]
+        prob = f" · {n.rain_probability_pct:.0f}% chance of rain" if pd.notna(n.rain_probability_pct) else ""
+        st.info(f"**Next forecast ({n['target_time']:%d %b %H:%M}):** {fmt(n.temperature_c, 1)} °C · "
+                f"{fmt(n.humidity_pct, 0)}% · {fmt(n.rainfall_mm, 1)} mm · "
+                f"{fmt(n.wind_speed_kmh, 1)} km/h{prob}")
+        rain_soon = nxt.head(6)["rainfall_mm"].max()
+        if pd.notna(rain_soon) and rain_soon >= rain_thr:
+            st.warning("☔ Rain expected within the next 6 hours.")
 
-    with col_metrics:
-        # Baris Atas Grid
-        m1, m2 = st.columns(2)
-        m1.metric("💨 Wind speed", f"{fmt(last.wind_speed_kmh, 1)} km/h", delta("wind_speed_kmh"))
-        m2.metric("🌧️ Rainfall", f"{fmt(last.rainfall_mm, 1)} mm", delta("rainfall_mm"), delta_color="inverse")
-        
-        # Baris Bawah Grid
-        m3, m4 = st.columns(2)
-        m3.metric("💧 Humidity", f"{fmt(last.humidity_pct, 0)} %", delta("humidity_pct", 0))
-        
-        # Tambahan Modern: Graf Gauge untuk Kelembapan (Meniru UV Index dari gambar)
-        fig_gauge = go.Figure(go.Indicator(
-            mode="gauge+number",
-            value=last.humidity_pct,
-            number={'suffix': "%", 'font': {'size': 24}},
-            title={'text': "Humidity Level", 'font': {'size': 14}},
-            gauge={
-                'axis': {'range': [0, 100], 'tickwidth': 1, 'tickcolor': "gray"},
-                'bar': {'color': PARAMS["Humidity"][2]},
-                'bgcolor': "rgba(0,0,0,0)",
-                'borderwidth': 0,
-                'steps': [
-                    {'range': [0, 40], 'color': "rgba(239, 85, 59, 0.15)"},
-                    {'range': [40, 70], 'color': "rgba(0, 204, 150, 0.15)"},
-                    {'range': [70, 100], 'color': "rgba(99, 110, 250, 0.15)"}],
-            }
-        ))
-        fig_gauge.update_layout(height=160, margin=dict(l=10, r=10, t=30, b=0), 
-                                paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
-                                font={'color': "var(--text-color)"})
-        m4.plotly_chart(fig_gauge, use_container_width=True)
-
-    st.markdown("---")
-    st.subheader("Last 24 h Trend")
+    st.subheader("Last 24 h")
     day = obs[obs["obs_time"] >= obs["obs_time"].max() - pd.Timedelta(hours=24)]
     fig = go.Figure()
     for nme in ("Temperature", "Humidity"):
         col, u, clr, _, _ = PARAMS[nme]
-        fig.add_scatter(x=day.obs_time, y=day[col], name=f"{nme} ({u})", line=dict(color=clr, shape='spline', smoothing=1.3))
+        fig.add_scatter(x=day.obs_time, y=day[col], name=f"{nme} ({u})", line=dict(color=clr))
     fig.add_bar(x=day.obs_time, y=day.rainfall_mm, name="Rainfall (mm)",
                 marker_color=PARAMS["Rainfall"][2], opacity=.5)
-    
     fig.update_layout(height=340, margin=dict(l=0, r=0, t=10, b=0), hovermode="x unified",
-                      paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
-                      legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1))
+                      legend=dict(orientation="h"))
     st.plotly_chart(fig, use_container_width=True)
 
 # ---------- Tab 2: actual vs forecast ----------
@@ -290,9 +225,56 @@ with t2:
                              yaxis_title="Forecast", showlegend=False)
             st.plotly_chart(sf, use_container_width=True)
 
-# ---------- Tab 3: accuracy (Owner C's evaluation engine) ----------
+# ---------- Tab 3: accuracy ----------
 with t3:
     if pairs_hz.empty:
         st.info("Not enough matched pairs to compute metrics yet.")
     else:
         st.caption("Metrics computed with Owner C's evaluation engine (`database/weather_db.py`).")
+        em = wdb.error_metrics(pairs_hz)
+        st.subheader(f"Error metrics · {hz} h lead time · {int(em['n'].max())} pairs")
+        cols = st.columns(len(em))
+        for i, r in enumerate(em.itertuples(index=False)):
+            cols[i].metric(r.Variable, f"MAE {r.MAE:.2f}", f"RMSE {r.RMSE:.2f}", delta_color="off")
+
+        by_lead = wdb.error_metrics(pairs_f, by_lead_time=True)
+        if not by_lead.empty:
+            st.markdown("**MAE by forecast lead time**")
+            fig = go.Figure()
+            colours = {"Temperature (°C)": PARAMS["Temperature"][2], "Humidity (%)": PARAMS["Humidity"][2],
+                       "Wind Speed (km/h)": PARAMS["Wind speed"][2]}
+            for var, s in by_lead.groupby("Variable"):
+                fig.add_scatter(x=s["Lead (h)"], y=s.MAE, mode="lines+markers", name=var,
+                                line=dict(color=colours.get(var)))
+            fig.update_layout(height=320, xaxis_title="Lead time (h)", yaxis_title="MAE",
+                              margin=dict(l=0, r=0, t=10, b=0), legend=dict(orientation="h"))
+            st.plotly_chart(fig, use_container_width=True)
+            st.dataframe(by_lead, use_container_width=True, hide_index=True)
+
+        st.subheader(f"Rain confusion matrix · {hz} h lead time · threshold {rain_thr} mm")
+        cm = wdb.rain_confusion_matrix(pairs_hz, threshold_mm=rain_thr)
+        cmdf = wdb.confusion_matrix_df(cm)
+        hm = go.Figure(go.Heatmap(
+            z=cmdf.values, x=list(cmdf.columns), y=list(cmdf.index), text=cmdf.values,
+            texttemplate="%{text}", colorscale="Blues", showscale=False))
+        hm.update_layout(height=320, margin=dict(l=0, r=0, t=10, b=0), yaxis=dict(autorange="reversed"))
+        a, b = st.columns([3, 2])
+        a.plotly_chart(hm, use_container_width=True)
+        acc = cm["Accuracy"]
+        b.metric("Accuracy", fmt(acc * 100 if acc is not None else None, 1) + " %")
+        b.metric("Precision", fmt(cm["Precision"]))
+        b.metric("Recall (POD)", fmt(cm["Recall (POD)"]))
+        b.metric("False Alarm Ratio", fmt(cm["False Alarm Ratio"]))
+
+# ---------- Tab 4: data & export ----------
+with t4:
+    st.subheader("Historical observations")
+    st.dataframe(obs_f.sort_values("obs_time", ascending=False), use_container_width=True, hide_index=True)
+    st.download_button("⬇️ Export observations (CSV)", obs_f.to_csv(index=False).encode(),
+                       "observations.csv", "text/csv")
+    if not pairs_f.empty:
+        st.download_button("⬇️ Export forecast-vs-actual (CSV)", pairs_f.to_csv(index=False).encode(),
+                           "forecast_vs_actual.csv", "text/csv")
+        st.download_button("⬇️ Export error metrics by lead time (CSV)",
+                           wdb.error_metrics(pairs_f, by_lead_time=True).to_csv(index=False).encode(),
+                           "error_metrics.csv", "text/csv")
