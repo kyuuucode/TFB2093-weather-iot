@@ -3,15 +3,21 @@
 Reads Owner C's SQLite database (database/weather.db) and uses Owner C's evaluation
 engine (database/weather_db.py) for MAE, RMSE and the rain confusion matrix.
 
+LIVE SYNC: the dashboard downloads the latest weather.db committed by the hourly
+cronjob from GitHub, so the deployed app always shows fresh data without waiting
+for a Streamlit Cloud redeploy. Falls back to the bundled DB if offline.
+
 Run from the repo root:   streamlit run dashboard/app.py
 """
 import os
 import sqlite3
 import sys
+import tempfile
 
 import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
+import requests
 import streamlit as st
 
 # ---------- link to Owner C's module ----------
@@ -20,6 +26,30 @@ sys.path.insert(0, os.path.join(HERE, "..", "database"))
 import weather_db as wdb  # noqa: E402  (Owner C: schema, load_pairs, error_metrics, rain_confusion_matrix)
 
 DB_PATH = os.environ.get("WEATHER_DB", wdb.DB_PATH)
+
+# ---------- live database sync (new) ----------
+REPO_DB_URL = "https://raw.githubusercontent.com/kyuuucode/TFB2093-weather-iot/main/database/weather.db"
+
+
+def get_fresh_db():
+    """Download the newest weather.db snapshot committed by the hourly cronjob."""
+    try:
+        r = requests.get(REPO_DB_URL, timeout=15)
+        r.raise_for_status()
+        path = os.path.join(tempfile.gettempdir(), "weather_live.db")
+        with open(path, "wb") as f:
+            f.write(r.content)
+        return path
+    except Exception:
+        return None  # offline -> fall back to the bundled DB
+
+
+_fresh = get_fresh_db()
+if _fresh:
+    DB_PATH = _fresh
+
+# auto-refresh the page every 5 minutes so new hourly data appears on its own
+st.markdown('<meta http-equiv="refresh" content="300">', unsafe_allow_html=True)
 
 # display name -> (observations column, unit, colour, forecast col in view, observed col in view)
 PARAMS = {
@@ -159,7 +189,7 @@ with t1:
                 marker_color=PARAMS["Rainfall"][2], opacity=.5)
     fig.update_layout(height=340, margin=dict(l=0, r=0, t=10, b=0), hovermode="x unified",
                       legend=dict(orientation="h"))
-    st.plotly_chart(fig, width="stretch")
+    st.plotly_chart(fig, use_container_width=True)
 
 # ---------- Tab 2: actual vs forecast ----------
 with t2:
@@ -176,7 +206,7 @@ with t2:
         fig.update_layout(height=430, hovermode="x unified", yaxis_title=f"{pick} ({unit})",
                           margin=dict(l=0, r=0, t=10, b=0), legend=dict(orientation="h"))
         fig.update_xaxes(rangeslider_visible=True)
-        st.plotly_chart(fig, width="stretch")
+        st.plotly_chart(fig, use_container_width=True)
 
         c1, c2 = st.columns(2)
         with c1:
@@ -185,7 +215,7 @@ with t2:
             ef = go.Figure(go.Bar(x=g.target_time, y=e,
                                   marker_color=np.where(e >= 0, "#ef553b", "#636efa")))
             ef.update_layout(height=280, margin=dict(l=0, r=0, t=10, b=0), yaxis_title=f"Error ({unit})")
-            st.plotly_chart(ef, width="stretch")
+            st.plotly_chart(ef, use_container_width=True)
         with c2:
             st.markdown("**Forecast vs actual scatter**")
             lo = float(np.nanmin([g[ocol].min(), g[fcol].min()]))
@@ -196,7 +226,7 @@ with t2:
                            name="perfect")
             sf.update_layout(height=280, margin=dict(l=0, r=0, t=10, b=0), xaxis_title="Actual",
                              yaxis_title="Forecast", showlegend=False)
-            st.plotly_chart(sf, width="stretch")
+            st.plotly_chart(sf, use_container_width=True)
 
 # ---------- Tab 3: accuracy (Owner C's evaluation engine) ----------
 with t3:
@@ -221,8 +251,8 @@ with t3:
                                 line=dict(color=colours.get(var)))
             fig.update_layout(height=320, xaxis_title="Lead time (h)", yaxis_title="MAE",
                               margin=dict(l=0, r=0, t=10, b=0), legend=dict(orientation="h"))
-            st.plotly_chart(fig, width="stretch")
-            st.dataframe(by_lead, width="stretch", hide_index=True)
+            st.plotly_chart(fig, use_container_width=True)
+            st.dataframe(by_lead, use_container_width=True, hide_index=True)
 
         st.subheader(f"Rain confusion matrix · {hz} h lead time · threshold {rain_thr} mm")
         cm = wdb.rain_confusion_matrix(pairs_hz, threshold_mm=rain_thr)
@@ -232,7 +262,7 @@ with t3:
             texttemplate="%{text}", colorscale="Blues", showscale=False))
         hm.update_layout(height=320, margin=dict(l=0, r=0, t=10, b=0), yaxis=dict(autorange="reversed"))
         a, b = st.columns([3, 2])
-        a.plotly_chart(hm, width="stretch")
+        a.plotly_chart(hm, use_container_width=True)
         acc = cm["Accuracy"]
         b.metric("Accuracy", fmt(acc * 100 if acc is not None else None, 1) + " %")
         b.metric("Precision", fmt(cm["Precision"]))
@@ -242,7 +272,7 @@ with t3:
 # ---------- Tab 4: data & export ----------
 with t4:
     st.subheader("Historical observations")
-    st.dataframe(obs_f.sort_values("obs_time", ascending=False), width="stretch", hide_index=True)
+    st.dataframe(obs_f.sort_values("obs_time", ascending=False), use_container_width=True, hide_index=True)
     st.download_button("⬇️ Export observations (CSV)", obs_f.to_csv(index=False).encode(),
                        "observations.csv", "text/csv")
     if not pairs_f.empty:
