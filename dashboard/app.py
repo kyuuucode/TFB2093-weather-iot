@@ -295,4 +295,4 @@ with t3:
     if pairs_hz.empty:
         st.info("Not enough matched pairs to compute metrics yet.")
     else:
-        st.caption("Metrics computed with Owner C's evaluation engine (`database/weather_
+        st.caption("Metrics computed with Owner C's evaluation engine (`database/weather_db.py`).")
