@@ -1,4 +1,7 @@
-"""Seri Iskandar Weather Monitor - Streamlit dashboard (Owner: Aufa).
+"""Seri Iskandar Weather Monitor - Streamlit dashboard (TFB2093 IoT Project, Owner: Aufa).
+
+Reads Owner C's SQLite database (database/weather.db) and uses Owner C's evaluation
+engine (database/weather_db.py) for MAE, RMSE and the rain confusion matrix.
 
 LIVE SYNC: the dashboard downloads the latest weather.db committed by the hourly
 cronjob from GitHub, so the deployed app always shows fresh data without waiting
@@ -17,10 +20,10 @@ import plotly.graph_objects as go
 import requests
 import streamlit as st
 
-# ---------- link ----------
+# ---------- link to Owner C's module ----------
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(HERE, "..", "database"))
-import weather_db as wdb  # noqa: E402  (schema, load_pairs, error_metrics, rain_confusion_matrix)
+import weather_db as wdb  # noqa: E402  (Owner C: schema, load_pairs, error_metrics, rain_confusion_matrix)
 
 DB_PATH = os.environ.get("WEATHER_DB", wdb.DB_PATH)
 
@@ -137,7 +140,7 @@ pairs_f = pairs[(pairs["target_time"].dt.date >= d0) & (pairs["target_time"].dt.
 pairs_hz = pairs_f[pairs_f["lead_time_hours"] == hz].sort_values("target_time") if hz is not None else pairs_f.iloc[0:0]
 
 # ---------- header ----------
-st.title("🌦️ WEATHERLY - Seri Iskandar Weather Monitor")
+st.title("🌦️ Seri Iskandar Weather Monitor")
 st.caption("Open-Meteo observations vs. forecasts · TFB2093 Internet-of-Things")
 if using_demo:
     st.warning("database/weather.db not found – showing **demo data** from Owner C's demo builder.")
@@ -225,7 +228,7 @@ with t2:
                              yaxis_title="Forecast", showlegend=False)
             st.plotly_chart(sf, use_container_width=True)
 
-# ---------- Tab 3: accuracy ----------
+# ---------- Tab 3: accuracy (Owner C's evaluation engine) ----------
 with t3:
     if pairs_hz.empty:
         st.info("Not enough matched pairs to compute metrics yet.")
