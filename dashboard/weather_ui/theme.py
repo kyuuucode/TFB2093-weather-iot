@@ -195,7 +195,78 @@ div[data-testid="stMetricDelta"], div[data-testid="stMetricDelta"] * {{
 """
 
 
+"""Responsive patch untuk dashboard/weather_ui/theme.py (TFB2093 Weatherly).
+
+Guna: buka dashboard/weather_ui/theme.py, pergi ke paling bawah fail, dan REPLACE
+fungsi build_css yang sedia ada dengan keseluruhan blok di bawah (fungsi
+_responsive_css + build_css yang baru). Jangan ubah apa-apa lain dalam fail tu.
+
+Punca masalah laptop: hero grid guna fixed height (272px) dan font besar
+(2.8rem-3.3rem) tanpa media queries, jadi dekat laptop ~1366px text terpotong
+bawah card dan suhu pecah dua baris ("27." atas "5").
+
+Breakpoints: 1700px (laptop besar / desktop kecil) dan 1366px (laptop biasa).
+Monitor besar (>1700px) kekal rupa sedia ada 100%.
+"""
+
+
+def _responsive_css(T):
+    """Laptop-friendly scaling: shrink the fixed-size hero/KPI layout on narrow screens."""
+    return """
+<style>
+/* ---- allow the fixed-height hero to breathe on smaller screens ---- */
+@media (max-width: 1700px) {
+  .hero-grid {grid-template-rows:150px 30px 30px; height:auto;}
+  .glass.hero {height:auto; min-height:150px; padding:14px 16px;}
+  .hero-emoji {font-size:2.6rem;}
+  .hero-temp {font-size:2.2rem;}
+  .hero-unit {font-size:.95rem;}
+  .hero-cond {font-size:1.05rem; margin-top:6px;}
+  .hero-sub {font-size:.78rem;}
+  .sun-row {font-size:.8rem; margin-top:5px;}
+  .glass.kpi {padding:10px 14px;}
+  .glass.kpi .big {font-size:1.7rem;}
+  .glass.kpi .unit {font-size:.9rem;}
+  .glass.kpi .sub {font-size:.72rem; margin-top:2px;}
+  .glass.kpi h4 {font-size:.82rem; margin-bottom:6px;}
+  .note {font-size:.78rem; height:30px;}
+  .glass {padding:14px 16px; border-radius:18px;}
+  .glass .big {font-size:1.8rem;}
+  .day-card {padding:10px 4px;}
+  .day-card .t {font-size:.9rem;}
+  .day-card .d, .day-card .n {font-size:.66rem;}
+  h1 {font-size:1.7rem !important;}
+  .block-container {padding-top:1.2rem;}
+}
+@media (max-width: 1366px) {
+  .hero-grid {grid-template-rows:128px 28px 28px; gap:8px 12px;}
+  .glass.hero {padding:12px 12px;}
+  .hero-emoji {font-size:2.1rem;}
+  .hero-temp {font-size:1.8rem;}
+  .hero-cond {font-size:.95rem;}
+  .hero-sub {font-size:.7rem;}
+  .sun-row {font-size:.72rem;}
+  .glass.kpi {padding:8px 12px;}
+  .glass.kpi .big {font-size:1.35rem;}
+  .glass.kpi h4 {font-size:.74rem;}
+  .glass.kpi .sub {font-size:.66rem;}
+  .glass.kpi .unit {font-size:.78rem;}
+  .note {font-size:.72rem; height:28px;}
+  .glass.cm .big {font-size:1.6rem;}
+  .glass.cm h4 {font-size:.85rem;}
+  .glass {padding:12px 14px;}
+  .glass .big {font-size:1.5rem;}
+  .glass h4 {font-size:.8rem;}
+  .day-card .t {font-size:.82rem;}
+  .day-card .d, .day-card .n {font-size:.62rem;}
+}
+/* never let the big numbers wrap into two lines (the "27. / 5" bug) */
+.hero-temp, .glass.kpi .big, .glass .big {white-space:nowrap;}
+</style>
+"""
+
+
 def build_css(mode: str) -> str:
     """All CSS for the given mode ('dark' | 'light')."""
     T = THEME[mode]
-    return _base_css(T) + (_dark_css(T) if mode == "dark" else "")
+    return _base_css(T) + (_dark_css(T) if mode == "dark" else "") + _responsive_css(T)
