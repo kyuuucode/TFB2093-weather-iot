@@ -4,3 +4,4 @@ pandas
 numpy
 streamlit>=1.50
 plotly
+streamlit-echarts
